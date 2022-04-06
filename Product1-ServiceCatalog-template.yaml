@@ -1,0 +1,258 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  
+  #########################
+  ## Product Information ##
+  #########################
+  ProductName:
+    Description: "Product name"
+    Type: String
+    Default: "Product1"
+    AllowedPattern: ^[a-zA-Z0-9]*$
+    ConstraintDescription: "Alfanumeric values, no space allowed"
+
+  Description:
+    Description: "Product description goes here"
+    Type: String
+    Default: "Product stack of these AWS components ..."
+
+  Distributor:
+    Description: "Template distributor"
+    Type: String
+    Default: "CCoE Team"
+
+  Owner:
+    Description: "Product Owner"
+    Type: String
+    Default: "CCoE Team"
+
+  SupportDescription:
+    Description: "This product is supported by CCoE"
+    Type: String
+    Default: "CCoE Team"
+    
+  SupportEmail:
+    Description: "CCOE support email address"
+    Type: String
+    Default: "ccoe@example.com"    
+
+  SupportUrl:
+    Description: "Support link"
+    Type: String
+    Default: "https://support.local"
+
+  VersionDescription:
+    Description: "Version description"
+    Type: String
+    Default: "This version adds new fixes ..."
+  
+  DisableTemplateValidation:
+    Description: "Disable template validation?"
+    Type: String
+    Default: False
+    AllowedValues:
+      - True
+      - False
+  
+  Version:
+    Description: "Version of the product, i.e 4.2.0-0020"
+    Type: String
+    Default: "1.0.0"
+
+  ReplaceProvisioningArtifacts:
+    Description: "Update product Id over properties changes?"
+    Type: String
+    Default: False
+    AllowedValues:
+      - True
+      - False
+
+  PortfolioStackName:
+    Description: "Enter the Portfolio stack name"
+    Type: String
+    Default: "Portfolio1"
+
+  ############################
+  ## Repository Information ##
+  ############################
+
+
+Resources:
+  
+  ########################
+  ## Product components ##
+  ########################
+  Product:
+    Type: AWS::ServiceCatalog::CloudFormationProduct
+    Properties: 
+      Description: !Ref Description
+      Distributor: !Ref Distributor
+      Name: !Ref ProductName
+      Owner: !Ref Owner
+      ProvisioningArtifactParameters: 
+        - Description: !Ref VersionDescription
+          DisableTemplateValidation: !Ref DisableTemplateValidation
+          Info: { "LoadTemplateFromURL": "https://s3.amazonaws.com/caprica-devtools-templates/product.yaml" }
+          Name: !Ref Version
+      ReplaceProvisioningArtifacts: !Ref ReplaceProvisioningArtifacts
+      SupportDescription: !Ref SupportDescription
+      SupportEmail: !Ref SupportEmail
+      SupportUrl: !Ref SupportUrl
+      Tags: 
+        -
+          Key: "Project"
+          Value: "Shared Service Catalog"
+        -
+          Key: "Owner"
+          Value: !Ref Owner
+  
+  ProductAssociation:
+    Type: AWS::ServiceCatalog::PortfolioProductAssociation
+    Properties: 
+      PortfolioId: {'Fn::ImportValue': !Sub '${PortfolioStackName}-PortfolioId'}
+      ProductId: !Ref Product
+        #SourcePortfolioId: String
+          
+
+  ######################################
+  ## CodeCommit Repository components ##
+  ######################################
+  ProductRepository:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Join ["-",[!Ref PortfolioStackName,!Ref ProductName,"Repository"]]
+      RepositoryDescription: !Ref Description
+    #UpdateReplacePolicy: Retain
+    #DeletionPolicy: Retain
+
+
+    
+  #############################
+  ## CodePipeline components ##
+  #############################
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join ["-",[!Ref PortfolioStackName,!Ref ProductName,"CodePipelineRole"]]
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+        Version: "2012-10-17"
+  
+  PipelineRoleDefaultPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Sid: "ServiceCatalog"
+            Action:
+              - servicecatalog:ListProvisioningArtifacts
+              - servicecatalog:CreateProvisioningArtifact
+              - servicecatalog:DescribeProvisioningArtifact
+              - servicecatalog:DeleteProvisioningArtifact
+              - servicecatalog:UpdateProduct
+            Effect: Allow
+            Resource:
+              - "*"
+          - Sid: "CodeCommit"
+            Action:
+              - codecommit:*
+            Effect: Allow
+            Resource:
+              - "*"
+          - Sid: "S3Bucket"
+            Action:
+              - s3:*
+            Effect: Allow
+            Resource:
+              - "*"
+          - Sid: "TestTemp"
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:DeleteStack
+              - cloudformation:DescribeStacks
+              - cloudformation:UpdateStack
+              - cloudformation:CreateChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:DescribeChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:SetStackPolicy
+              - cloudformation:ValidateTemplate              
+            Effect: Allow
+            Resource:
+              - "*"              
+              
+              
+        Version: "2012-10-17"
+      PolicyName: !Join ["-",[!Ref PortfolioStackName,!Ref ProductName,"CodePipelinePolicy"]]
+      Roles:
+        - Ref: CodePipelineRole
+  
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Join ["-",[!Ref PortfolioStackName,!Ref ProductName,"Pipeline"]]
+      RoleArn:
+        Fn::GetAtt:
+          - CodePipelineRole
+          - Arn
+      Stages:
+        #-----------------#
+        # Source
+        #-----------------#
+        - Actions:
+          - ActionTypeId:
+              Category: Source
+              Owner: AWS
+              Provider: CodeCommit
+              Version: "1"
+            Configuration:
+              RepositoryName: !Join ["-",[!Ref PortfolioStackName,!Ref ProductName,"Repository"]]
+              BranchName: main
+              PollForSourceChanges: true
+            Name: CodeCommit
+            Namespace: "SourceVariables"
+            OutputArtifacts:
+              - Name: ProductTemplate
+            # RoleArn:
+            #   Fn::GetAtt:
+            #     - SourceCodeCommitCodePipelineActionRole
+            #     - Arn
+            RunOrder: 1
+          Name: "SourceStage"
+  
+        #-----------------#
+        # Deploy
+        #-----------------#
+        - Actions:
+          - ActionTypeId:
+              Category: Deploy
+              Owner: AWS
+              Provider: ServiceCatalog
+              Version: "1"
+            InputArtifacts:
+              - Name: ProductTemplate
+            ## Placeholder for configuration
+            Configuration: 
+              ConfigurationFilePath: "config.json" 
+              ### Reference below to build this information direct in CodePipeline. Reason is to be able to update product version at the same time the product content is updated.
+              # TemplateFilePath: product.yaml
+              # ProductVersionName: !Ref Version
+              # ProductType: "CLOUD_FORMATION_TEMPLATE"
+              # ProductVersionDescription: !Ref Description
+              ProductId: !Ref Product              
+            RunOrder: 1
+            Name: "DeployProductUpdate"
+          Name: "DeployStage"
+          #    
+      ArtifactStore:
+        # EncryptionKey:
+        #   Id:
+        #     Fn::ImportValue: !Sub "${KeyStackName}:ExportsKmsKeyArn"
+        #   Type: KMS
+        Location: "caprica-devtools-templates"
+        Type: S3
